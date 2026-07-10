@@ -4,13 +4,14 @@ from vosk import Model, KaldiRecognizer
 import json
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")
+
+socketio = SocketIO(app, cors_allowed_origins="*", transports=['websocket'])
 
 model = Model("model")
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html>
+<html lang="ka">
 <head>
     <meta charset="UTF-8">
     <title>ქართული Live STT (WebSockets)</title>
@@ -18,21 +19,25 @@ HTML_TEMPLATE = """
         body { 
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
             text-align: center; 
-            background: #f0f2f5; 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
             padding: 40px; 
             margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            box-sizing: border-box;
         }
         .box { 
             max-width: 600px; 
-            margin: 40px auto; 
+            width: 100%;
             background: white; 
             padding: 40px; 
             border-radius: 16px; 
-            box-shadow: 0 10px 30px rgba(0,0,0,0.08); 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15); 
         }
         h2 { color: #333; margin-bottom: 30px; font-weight: 600; }
         
-        /* კონტეინერი ღილაკისთვის, რომ პულსაცია ცენტრში იყოს */
         .btn-container {
             display: flex;
             justify-content: center;
@@ -41,7 +46,6 @@ HTML_TEMPLATE = """
             margin-bottom: 20px;
         }
 
-        /* მრგვალი სტანდარტული ღილაკი */
         .mic-btn { 
             width: 90px; 
             height: 90px; 
@@ -62,24 +66,16 @@ HTML_TEMPLATE = """
             transform: scale(1.05);
         }
 
-        /* როცა ჩაწერილია - წითელი ხდება და იწყებს პულსაციას */
         .mic-btn.recording { 
             background: #f44336; 
             box-shadow: 0 6px 20px rgba(244, 67, 54, 0.4);
             animation: pulse 1.5s infinite;
         }
 
-        /* პულსაციის ანიმაცია */
         @keyframes pulse {
-            0% {
-                box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7);
-            }
-            70% {
-                box-shadow: 0 0 0 20px rgba(244, 67, 54, 0);
-            }
-            100% {
-                box-shadow: 0 0 0 0 rgba(244, 67, 54, 0);
-            }
+            0% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(244, 67, 54, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(244, 67, 54, 0); }
         }
 
         #text { 
@@ -121,7 +117,7 @@ HTML_TEMPLATE = """
         let btn = document.getElementById('btn');
         let textDiv = document.getElementById('text');
         let statusDiv = document.getElementById('status');
-        let socket = io();
+        let socket = io({ transports: ['websocket'] });
         let audioContext;
         let processor;
         let input;
@@ -201,17 +197,22 @@ def handle_audio(data):
         
     rec = user_recognizers[sid]
     
-    if rec.AcceptWaveform(data):
-        res = json.loads(rec.Result())
-        text = res.get("text", "")
-        if text:
-            user_texts[sid] += text + " "
-    else:
-        res = json.loads(rec.PartialResult())
-        p_text = res.get("partial", "")
-        if p_text:
-            current_full_text = user_texts[sid] + f" <span style='color: #7f8c8d; font-style: italic;'>{p_text}...</span>"
-            emit('speech_result', {'text': current_full_text})
+
+    try:
+        if rec.AcceptWaveform(data):
+            res = json.loads(rec.Result())
+            text = res.get("text", "")
+            if text:
+                user_texts[sid] += text + " "
+                emit('speech_result', {'text': user_texts[sid]})
+        else:
+            res = json.loads(rec.PartialResult())
+            p_text = res.get("partial", "")
+            if p_text:
+                current_full_text = user_texts[sid] + f" <span style='color: #7f8c8d; font-style: italic;'>{p_text}...</span>"
+                emit('speech_result', {'text': current_full_text})
+    except Exception:
+        pass
 
 @socketio.on('stop_stream')
 def handle_stop():
@@ -219,13 +220,14 @@ def handle_stop():
     sid = request.sid
     if sid in user_recognizers:
         rec = user_recognizers[sid]
-        res = json.loads(rec.FinalResult())
-        text = res.get("text", "")
-        if text:
-            user_texts[sid] += text
-        emit('speech_result', {'text': f"<strong>{user_texts[sid]}</strong>"})
-        del user_recognizers[sid]
-        del user_texts[sid]
-
-if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+        try:
+            res = json.loads(rec.FinalResult())
+            text = res.get("text", "")
+            if text:
+                user_texts[sid] += text
+            emit('speech_result', {'text': f"<strong>{user_texts[sid]}</strong>"})
+        except Exception:
+            pass
+        finally:
+            if sid in user_recognizers: del user_recognizers[sid]
+            if sid in user_texts: del user_texts[sid]

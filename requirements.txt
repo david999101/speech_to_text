@@ -2,6 +2,4 @@ flask
 flask-cors
 flask-socketio
 vosk
-gunicorn
-gevent
-gevent-websocket
+pywebview
