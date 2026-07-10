@@ -4,7 +4,6 @@ from vosk import Model, KaldiRecognizer
 import json
 
 app = Flask(__name__)
-
 socketio = SocketIO(app, cors_allowed_origins="*", transports=['websocket'])
 
 model = Model("model")
@@ -121,6 +120,7 @@ HTML_TEMPLATE = """
         let audioContext;
         let processor;
         let input;
+        let globalStream;
         let isRecording = false;
 
         socket.on('speech_result', (data) => {
@@ -134,17 +134,23 @@ HTML_TEMPLATE = """
                 isRecording = false;
                 btn.classList.remove('recording');
                 statusDiv.textContent = "ჩაწერა შეჩერდა. ჩასართავად კვლავ დააჭირეთ მიკროფონს.";
-                if (processor) processor.disconnect();
+                
+                // უსაფრთხო გათიშვა, რომ ბოლო ფრაგმენტები არ გაიპაროს სერვერზე
+                if (processor) { processor.onaudioprocess = null; processor.disconnect(); }
                 if (input) input.disconnect();
+                if (globalStream) globalStream.getTracks().forEach(track => track.stop());
+                if (audioContext) audioContext.close();
+                
                 socket.emit('stop_stream');
                 return;
             }
 
             try {
-                let stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                globalStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                input = audioContext.createMediaStreamSource(stream);
-                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                input = audioContext.createMediaStreamSource(globalStream);
+                // 2048 ზომის ბლოკი უფრო სტაბილურია და სწრაფად აწვდის Vosk-ს ინფორმაციას
+                processor = audioContext.createScriptProcessor(2048, 1, 1);
                 
                 input.connect(processor);
                 processor.connect(audioContext.destination);
@@ -161,10 +167,15 @@ HTML_TEMPLATE = """
                     let left = e.inputBuffer.getChannelData(0);
                     let l = left.length;
                     let buf = new Int16Array(l);
+                    let hasSignal = false;
                     while (l--) {
                         buf[l] = Math.min(1, left[l]) * 0x7FFF;
+                        if (buf[l] !== 0) hasSignal = true;
                     }
-                    socket.emit('audio_data', buf.buffer);
+                    // ვგზავნით მხოლოდ იმ შემთხვევაში, თუ ბუფერი სრულიად ცარიელი (ნულოვანი) არაა
+                    if (hasSignal) {
+                        socket.emit('audio_data', buf.buffer);
+                    }
                 };
             } catch (err) {
                 alert("მიკროფონთან წვდომა უარყოფილია ან მოწყობილობა ვერ მოიძებნა.");
@@ -197,6 +208,9 @@ def handle_audio(data):
         
     rec = user_recognizers[sid]
     
+    # თუ მონაცემები ძალიან მცირეა, გამოვტოვოთ Vosk-ის დასაცავად
+    if len(data) < 32:
+        return
 
     try:
         if rec.AcceptWaveform(data):
